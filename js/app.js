@@ -37,6 +37,8 @@ const state = {
 
 let pageSeq = 0;
 let fitScale = 1;       // css px per base unit at zoom 1
+const activeTouches = new Map(); // touch pointers currently down inside the viewer
+let abortActiveGesture = null;   // cancels an in-progress overlay gesture (set while one runs)
 
 const $ = (id) => document.getElementById(id);
 const viewer = $('viewer');
@@ -278,11 +280,11 @@ function renderOverlay(p) {
   p.overlay.style.height = (p.baseH * k) + 'px';
   const ctx = p.overlay.getContext('2d');
   ctx.setTransform(bk, 0, 0, bk, 0, 0);
-  drawAnnots(ctx, p);
+  drawAnnots(ctx, p, true);
   drawSelection(ctx, p);
 }
 
-function drawAnnots(ctx, p) {
+function drawAnnots(ctx, p, editor) {
   for (const a of p.annots) {
     if (a._editing) continue;
     if (a.type === 'ink') {
@@ -313,11 +315,14 @@ function drawAnnots(ctx, p) {
       ctx.save();
       ctx.fillStyle = a.color;
       ctx.fillRect(a.x, a.y, a.w, a.h);
-      // faint outline so a white patch stays findable while editing
-      // (export draws only the fill)
-      ctx.strokeStyle = 'rgba(60, 70, 90, .18)';
-      ctx.lineWidth = 0.75;
-      ctx.strokeRect(a.x, a.y, a.w, a.h);
+      // patches are seamless everywhere except while the whiteout tool is
+      // active, where a faint dashed outline keeps them findable
+      if (editor && state.tool === 'whiteout') {
+        ctx.strokeStyle = 'rgba(79, 124, 255, .5)';
+        ctx.lineWidth = 1 / scaleNow();
+        ctx.setLineDash([4 / scaleNow(), 3 / scaleNow()]);
+        ctx.strokeRect(a.x, a.y, a.w, a.h);
+      }
       ctx.restore();
     } else if (a.type === 'text') {
       ctx.save();
@@ -527,8 +532,16 @@ function updateShellSizes() {
   const k = scaleNow();
   for (const p of state.pages) {
     if (!p.shell) continue;
-    p.shell.style.width = (p.baseW * k) + 'px';
-    p.shell.style.height = (p.baseH * k) + 'px';
+    const w = (p.baseW * k) + 'px';
+    const h = (p.baseH * k) + 'px';
+    p.shell.style.width = w;
+    p.shell.style.height = h;
+    // stretch the current bitmaps immediately so the layout never shows
+    // gaps mid-zoom; the crisp re-render below replaces them
+    p.pdfCanvas.style.width = w;
+    p.pdfCanvas.style.height = h;
+    p.overlay.style.width = w;
+    p.overlay.style.height = h;
     p.renderedKey = null;
   }
   // re-render whatever is on screen now
@@ -537,6 +550,32 @@ function updateShellSizes() {
     const r = p.shell.getBoundingClientRect();
     if (r.bottom > -600 && r.top < innerHeight + 600) renderPage(p);
   }
+}
+
+/* --- zoom anchoring: keep the content under your fingers/cursor in place --- */
+
+// which page is under a client point, and where on it (as fractions)
+function anchorInfo(clientX, clientY) {
+  let best = null, bestDist = Infinity;
+  for (const p of state.pages) {
+    if (!p.shell) continue;
+    const r = p.shell.getBoundingClientRect();
+    const d = clientY < r.top ? r.top - clientY : clientY > r.bottom ? clientY - r.bottom : 0;
+    if (d < bestDist) {
+      bestDist = d;
+      best = { p, fx: (clientX - r.left) / r.width, fy: (clientY - r.top) / r.height };
+    }
+    if (d === 0) break;
+  }
+  return best;
+}
+
+// after a relayout, scroll so anchor's page-point sits at the target client point
+function scrollToAnchor(anchor, targetClientX, targetClientY) {
+  if (!anchor || !anchor.p.shell) return;
+  const r = anchor.p.shell.getBoundingClientRect();
+  viewer.scrollLeft += (r.left + anchor.fx * r.width) - targetClientX;
+  viewer.scrollTop += (r.top + anchor.fy * r.height) - targetClientY;
 }
 
 let resizeTimer = null;
@@ -591,6 +630,10 @@ function setTool(tool) {
     const p = state.selected.page;
     state.selected = null;
     renderOverlay(p);
+  }
+  // whiteout outlines appear/disappear with the tool
+  for (const p of state.pages) {
+    if (p.shell && p.annots.some(a => a.type === 'rect')) renderOverlay(p);
   }
   updateToolOptions();
 }
@@ -664,8 +707,25 @@ function attachOverlayEvents(p) {
 
   ov.addEventListener('contextmenu', e => e.preventDefault());
 
+  // throw away a half-made gesture (e.g. when a second finger starts a pinch)
+  const abort = () => {
+    if (!gesture) return;
+    const g = gesture;
+    gesture = null;
+    abortActiveGesture = null;
+    if (g.mode === 'draw' || g.mode === 'rectdraw') {
+      const i = p.annots.indexOf(g.annot);
+      if (i >= 0) p.annots.splice(i, 1);
+    } else if ((g.mode === 'drag' || g.mode === 'resize') && g.before) {
+      Object.assign(g.annot, g.before);
+    }
+    renderOverlay(p);
+  };
+
   ov.addEventListener('pointerdown', (e) => {
     if (e.button !== 0 && e.pointerType === 'mouse') return;
+    // a second finger means pinch/pan, never a second stroke
+    if (e.pointerType === 'touch' && activeTouches.size > 1) return;
     const pt = eventToBase(p, e);
     const tool = state.tool;
     commitTextEditor();
@@ -704,6 +764,7 @@ function attachOverlayEvents(p) {
         const hs = 14 / k;
         if (Math.abs(pt.x - (b.x + b.w)) < hs && Math.abs(pt.y - (b.y + b.h)) < hs) {
           gesture = { mode: 'resize', annot: sel.annot, start: pt, before: clone(sel.annot), bbox: b };
+          abortActiveGesture = abort;
           ov.setPointerCapture(e.pointerId);
           e.preventDefault();
           return;
@@ -720,6 +781,7 @@ function attachOverlayEvents(p) {
       updateToolOptions();
     }
     if (gesture) {
+      abortActiveGesture = abort;
       ov.setPointerCapture(e.pointerId);
       e.preventDefault();
     }
@@ -781,6 +843,7 @@ function attachOverlayEvents(p) {
     if (!gesture) return;
     const g = gesture;
     gesture = null;
+    abortActiveGesture = null;
     if (g.mode === 'draw') {
       pushUndo({ kind: 'add', page: p, annot: g.annot });
       renderOverlay(p);
@@ -1227,35 +1290,100 @@ async function exportPdf() {
 function openSidebar() { $('sidebar').classList.add('open'); }
 function closeSidebar() { $('sidebar').classList.remove('open'); }
 
-/* ------------------------------------------------------------ pinch zoom (mobile) */
+/* ------------------------------------------------------------ pinch zoom & two-finger pan */
 
-(function wirePinch() {
-  const pointers = new Map();
-  let startDist = 0;
+(function wireGestures() {
+  let pinch = null;
+
+  const midAndDist = () => {
+    const [a, b] = [...activeTouches.values()];
+    return {
+      mx: (a.x + b.x) / 2,
+      my: (a.y + b.y) / 2,
+      d: Math.max(Math.hypot(a.x - b.x, a.y - b.y), 24),
+    };
+  };
+
+  function startPinch() {
+    commitTextEditor();
+    if (abortActiveGesture) abortActiveGesture(); // a stroke in progress becomes a pan, not ink
+    const { mx, my, d } = midAndDist();
+    const hr = pagesHost.getBoundingClientRect();
+    pinch = {
+      d0: d,
+      mx0: mx, my0: my,
+      mx, my,
+      zoom0: state.zoom,
+      f: 1,
+      // second finger cancels native scrolling only on annotation overlays,
+      // so translate manually when both fingers are on them
+      manual: [...activeTouches.values()].every(t => t.onOverlay),
+      anchor: anchorInfo(mx, my),
+    };
+    pagesHost.style.transformOrigin = `${mx - hr.left}px ${my - hr.top}px`;
+    pagesHost.style.willChange = 'transform';
+  }
+
+  function movePinch() {
+    if (!pinch || activeTouches.size !== 2) return;
+    const { mx, my, d } = midAndDist();
+    pinch.f = clamp(d / pinch.d0, 0.25 / pinch.zoom0, 6 / pinch.zoom0);
+    pinch.mx = mx;
+    pinch.my = my;
+    const dx = pinch.manual ? mx - pinch.mx0 : 0;
+    const dy = pinch.manual ? my - pinch.my0 : 0;
+    pagesHost.style.transform = `translate(${dx}px, ${dy}px) scale(${pinch.f})`;
+  }
+
+  function endPinch() {
+    if (!pinch) return;
+    const g = pinch;
+    pinch = null;
+    pagesHost.style.transform = '';
+    pagesHost.style.transformOrigin = '';
+    pagesHost.style.willChange = '';
+    state.zoom = clamp(g.zoom0 * g.f, 0.25, 6);
+    computeFitScale();
+    updateShellSizes();
+    scrollToAnchor(g.anchor, g.mx, g.my);
+  }
+
   viewer.addEventListener('pointerdown', (e) => {
     if (e.pointerType !== 'touch') return;
-    pointers.set(e.pointerId, e);
-    if (pointers.size === 2) {
-      const [a, b] = [...pointers.values()];
-      startDist = Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY);
-    }
-  });
+    activeTouches.set(e.pointerId, {
+      x: e.clientX,
+      y: e.clientY,
+      onOverlay: e.target instanceof Element && e.target.classList.contains('overlay-layer'),
+    });
+    if (activeTouches.size === 2) startPinch();
+    else if (activeTouches.size > 2) endPinch();
+  }, true);
+
   viewer.addEventListener('pointermove', (e) => {
-    if (!pointers.has(e.pointerId)) return;
-    pointers.set(e.pointerId, e);
-    if (pointers.size === 2 && startDist) {
-      const [a, b] = [...pointers.values()];
-      const d = Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY);
-      const ratio = d / startDist;
-      if (ratio > 1.18 || ratio < 0.85) {
-        setZoom(state.zoom * ratio);
-        startDist = d;
-      }
-    }
-  });
-  const drop = (e) => { pointers.delete(e.pointerId); startDist = 0; };
-  viewer.addEventListener('pointerup', drop);
-  viewer.addEventListener('pointercancel', drop);
+    const t = activeTouches.get(e.pointerId);
+    if (!t) return;
+    t.x = e.clientX;
+    t.y = e.clientY;
+    movePinch();
+  }, true);
+
+  const drop = (e) => {
+    if (!activeTouches.delete(e.pointerId)) return;
+    if (activeTouches.size < 2) endPinch();
+  };
+  viewer.addEventListener('pointerup', drop, true);
+  viewer.addEventListener('pointercancel', drop, true);
+
+  // desktop: trackpad pinch / ctrl+wheel zooms around the cursor
+  viewer.addEventListener('wheel', (e) => {
+    if (!e.ctrlKey && !e.metaKey) return;
+    e.preventDefault();
+    const anchor = anchorInfo(e.clientX, e.clientY);
+    state.zoom = clamp(state.zoom * Math.exp(-e.deltaY * 0.0022), 0.25, 6);
+    computeFitScale();
+    updateShellSizes();
+    scrollToAnchor(anchor, e.clientX, e.clientY);
+  }, { passive: false });
 })();
 
 /* ------------------------------------------------------------ wiring */
