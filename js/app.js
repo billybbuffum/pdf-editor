@@ -1294,6 +1294,7 @@ function closeSidebar() { $('sidebar').classList.remove('open'); }
 
 (function wireGestures() {
   let pinch = null;
+  let residualPan = null; // finger left down after a pinch keeps panning
 
   const midAndDist = () => {
     const [a, b] = [...activeTouches.values()];
@@ -1315,9 +1316,6 @@ function closeSidebar() { $('sidebar').classList.remove('open'); }
       mx, my,
       zoom0: state.zoom,
       f: 1,
-      // second finger cancels native scrolling only on annotation overlays,
-      // so translate manually when both fingers are on them
-      manual: [...activeTouches.values()].every(t => t.onOverlay),
       anchor: anchorInfo(mx, my),
     };
     pagesHost.style.transformOrigin = `${mx - hr.left}px ${my - hr.top}px`;
@@ -1330,8 +1328,10 @@ function closeSidebar() { $('sidebar').classList.remove('open'); }
     pinch.f = clamp(d / pinch.d0, 0.25 / pinch.zoom0, 6 / pinch.zoom0);
     pinch.mx = mx;
     pinch.my = my;
-    const dx = pinch.manual ? mx - pinch.mx0 : 0;
-    const dy = pinch.manual ? my - pinch.my0 : 0;
+    // native panning is suppressed while two fingers are down, so the
+    // gesture translates as well as scales
+    const dx = mx - pinch.mx0;
+    const dy = my - pinch.my0;
     pagesHost.style.transform = `translate(${dx}px, ${dy}px) scale(${pinch.f})`;
   }
 
@@ -1346,15 +1346,19 @@ function closeSidebar() { $('sidebar').classList.remove('open'); }
     computeFitScale();
     updateShellSizes();
     scrollToAnchor(g.anchor, g.mx, g.my);
+    // a finger still on the glass keeps panning (native scroll can't
+    // start mid-touch, so do it manually until it lifts)
+    if (activeTouches.size === 1) {
+      const [id] = activeTouches.keys();
+      const t = activeTouches.get(id);
+      residualPan = { id, x: t.x, y: t.y };
+    }
   }
 
   viewer.addEventListener('pointerdown', (e) => {
     if (e.pointerType !== 'touch') return;
-    activeTouches.set(e.pointerId, {
-      x: e.clientX,
-      y: e.clientY,
-      onOverlay: e.target instanceof Element && e.target.classList.contains('overlay-layer'),
-    });
+    activeTouches.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    residualPan = null;
     if (activeTouches.size === 2) startPinch();
     else if (activeTouches.size > 2) endPinch();
   }, true);
@@ -1364,15 +1368,34 @@ function closeSidebar() { $('sidebar').classList.remove('open'); }
     if (!t) return;
     t.x = e.clientX;
     t.y = e.clientY;
+    if (residualPan && e.pointerId === residualPan.id) {
+      viewer.scrollLeft -= e.clientX - residualPan.x;
+      viewer.scrollTop -= e.clientY - residualPan.y;
+      residualPan.x = e.clientX;
+      residualPan.y = e.clientY;
+      return;
+    }
     movePinch();
   }, true);
 
   const drop = (e) => {
+    if (residualPan && e.pointerId === residualPan.id) residualPan = null;
     if (!activeTouches.delete(e.pointerId)) return;
     if (activeTouches.size < 2) endPinch();
   };
   viewer.addEventListener('pointerup', drop, true);
   viewer.addEventListener('pointercancel', drop, true);
+
+  // Without these, mobile Safari takes over two-finger gestures itself:
+  // it fires pointercancel (killing the pinch mid-gesture) or zooms the
+  // whole UI. Non-passive touchmove + GestureEvent preventDefault keep
+  // the pointer stream flowing to us.
+  viewer.addEventListener('touchmove', (e) => {
+    if (e.touches.length >= 2) e.preventDefault();
+  }, { passive: false });
+  for (const t of ['gesturestart', 'gesturechange', 'gestureend']) {
+    document.addEventListener(t, (e) => e.preventDefault());
+  }
 
   // desktop: trackpad pinch / ctrl+wheel zooms around the cursor
   viewer.addEventListener('wheel', (e) => {
