@@ -1,0 +1,167 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+<meta name="theme-color" content="#141a24">
+<meta name="description" content="Free web-based PDF editor. Annotate, sign, fill and organize PDFs right in your browser — nothing is uploaded, everything stays on your device.">
+<title>Inklet — Free PDF Editor</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='0.9em' font-size='90'%3E%E2%9C%8D%EF%B8%8F%3C/text%3E%3C/svg%3E">
+<link rel="stylesheet" href="css/styles.css">
+</head>
+<body>
+
+<header class="topbar">
+  <div class="brand" title="Inklet PDF Editor">
+    <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><path fill="currentColor" d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8l-6-6zm4 18H6V4h7v5h5v11z"/><path fill="var(--accent)" d="M8.5 16.9l.7-2.1 4.6-4.6 1.4 1.4-4.6 4.6-2.1.7zm7.4-6l-1.4-1.4.9-.9c.2-.2.5-.2.7 0l.7.7c.2.2.2.5 0 .7l-.9.9z"/></svg>
+    <span class="brand-name">Inklet</span>
+  </div>
+  <span class="doc-name" id="docName" title=""></span>
+  <div class="spacer"></div>
+  <button class="icon-btn" id="btnUndo" title="Undo (Ctrl+Z)" disabled>
+    <svg viewBox="0 0 24 24"><path fill="currentColor" d="M12.5 8c-2.65 0-5.05.99-6.9 2.6L2 7v9h9l-3.62-3.62c1.39-1.16 3.16-1.88 5.12-1.88 3.54 0 6.55 2.31 7.6 5.5l2.37-.78C21.08 11.03 17.15 8 12.5 8z"/></svg>
+  </button>
+  <div class="zoom-group" id="zoomGroup">
+    <button class="icon-btn" id="btnZoomOut" title="Zoom out">
+      <svg viewBox="0 0 24 24"><path fill="currentColor" d="M19 13H5v-2h14v2z"/></svg>
+    </button>
+    <button class="zoom-label" id="zoomLabel" title="Fit to width">100%</button>
+    <button class="icon-btn" id="btnZoomIn" title="Zoom in">
+      <svg viewBox="0 0 24 24"><path fill="currentColor" d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z"/></svg>
+    </button>
+  </div>
+  <button class="icon-btn" id="btnPages" title="Pages">
+    <svg viewBox="0 0 24 24"><path fill="currentColor" d="M4 6h16v2H4zm0 5h16v2H4zm0 5h16v2H4z"/></svg>
+  </button>
+  <button class="btn ghost" id="btnOpen" title="Open a PDF">
+    <svg viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M20 6h-8l-2-2H4a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2z"/></svg>
+    <span>Open</span>
+  </button>
+  <button class="btn primary" id="btnSave" title="Download edited PDF (Ctrl+S)" disabled>
+    <svg viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z"/></svg>
+    <span>Save</span>
+  </button>
+</header>
+
+<nav class="toolbar" id="toolbar">
+  <div class="tool-group">
+    <button class="tool-btn active" data-tool="pan" title="Pan / scroll">
+      <svg viewBox="0 0 24 24"><path fill="currentColor" d="M13 5.5a1.5 1.5 0 0 1 3 0V11h1V7.5a1.5 1.5 0 0 1 3 0v7A6.5 6.5 0 0 1 13.5 21H12a6 6 0 0 1-4.8-2.4l-3.2-4.27a1.5 1.5 0 0 1 2.3-1.92L8 14V4.5a1.5 1.5 0 0 1 3 0V10h1V3.5a1.5 1.5 0 0 1 3 0V11h-1V5.5z" transform="scale(.92) translate(1 .5)"/></svg>
+      <span>Pan</span>
+    </button>
+    <button class="tool-btn" data-tool="select" title="Select / move">
+      <svg viewBox="0 0 24 24"><path fill="currentColor" d="M7 2l12 11.2-5.8.5 3.3 7.3-2.2 1-3.2-7.4L7 18.5z"/></svg>
+      <span>Select</span>
+    </button>
+    <button class="tool-btn" data-tool="text" title="Add text">
+      <svg viewBox="0 0 24 24"><path fill="currentColor" d="M5 4v3h5.5v12h3V7H19V4z"/></svg>
+      <span>Text</span>
+    </button>
+    <button class="tool-btn" data-tool="pen" title="Draw">
+      <svg viewBox="0 0 24 24"><path fill="currentColor" d="M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25zM20.71 7.04a1 1 0 0 0 0-1.41l-2.34-2.34a1 1 0 0 0-1.41 0l-1.83 1.83 3.75 3.75 1.83-1.83z"/></svg>
+      <span>Draw</span>
+    </button>
+    <button class="tool-btn" data-tool="highlight" title="Highlight">
+      <svg viewBox="0 0 24 24"><path fill="currentColor" d="M6 14l-2 4h4l1-2-3-2zm12.24-9.24a1 1 0 0 0-1.41 0L7.5 14.09l2.41 2.41 9.33-9.33a1 1 0 0 0 0-1.41l-1-1zM4 20h16v2H4z" opacity=".95"/></svg>
+      <span>Highlight</span>
+    </button>
+    <button class="tool-btn" data-tool="eraser" title="Eraser">
+      <svg viewBox="0 0 24 24"><path fill="currentColor" d="M16.24 3.56l4.2 4.2a2 2 0 0 1 0 2.83l-9.9 9.9H5.1l-2.12-2.12a2 2 0 0 1 0-2.83l10.43-10.4a2 2 0 0 1 2.83 0zM4.4 16.95l2.12 2.12h2.68l2.02-2.02-4.8-4.8-2.02 2.02a.67.67 0 0 0 0 .95z"/><path fill="currentColor" d="M14 20h7v2h-7z"/></svg>
+      <span>Erase</span>
+    </button>
+    <button class="tool-btn" data-tool="sign" title="Add signature">
+      <svg viewBox="0 0 24 24"><path fill="currentColor" d="M3 17c2.5 0 2.5-3 5-3s2.5 3 5 3 2.5-3 5-3 2.5 3 5 3v2c-2.5 0-2.5-3-5-3s-2.5 3-5 3-2.5-3-5-3-2.5 3-5 3v-2z" transform="translate(-1.5)"/><path fill="currentColor" d="M13.5 3.5l3 3L8 15H5v-3l8.5-8.5z"/></svg>
+      <span>Sign</span>
+    </button>
+    <button class="tool-btn" data-tool="image" title="Insert image">
+      <svg viewBox="0 0 24 24"><path fill="currentColor" d="M21 19V5a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2zM8.5 13.5l2.5 3 3.5-4.5 4.5 6H5l3.5-4.5z"/></svg>
+      <span>Image</span>
+    </button>
+  </div>
+  <div class="tool-options" id="toolOptions">
+    <div class="opt-swatches" id="swatches"></div>
+    <input type="color" id="customColor" title="Custom color" value="#e8413c">
+    <label class="opt-slider" id="sizeOption">
+      <svg viewBox="0 0 24 24" width="16" height="16"><circle cx="12" cy="12" r="5" fill="currentColor"/></svg>
+      <input type="range" id="strokeSize" min="1" max="24" step="1" value="3" title="Stroke width">
+    </label>
+    <label class="opt-slider" id="fontOption" hidden>
+      <span class="opt-a">A</span>
+      <input type="range" id="fontSize" min="8" max="72" step="1" value="16" title="Font size">
+      <span class="opt-val" id="fontSizeVal">16</span>
+    </label>
+  </div>
+</nav>
+
+<div class="layout">
+  <aside class="sidebar" id="sidebar">
+    <div class="sidebar-head">
+      <span>Pages</span>
+      <button class="icon-btn small" id="btnCloseSidebar" title="Close">
+        <svg viewBox="0 0 24 24"><path fill="currentColor" d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+      </button>
+    </div>
+    <div class="thumbs" id="thumbs"></div>
+    <div class="sidebar-actions">
+      <button class="btn ghost block" id="btnAddPage">＋ Blank page</button>
+      <button class="btn ghost block" id="btnMerge">⧉ Merge PDF…</button>
+    </div>
+  </aside>
+  <div class="sidebar-scrim" id="sidebarScrim"></div>
+
+  <main class="viewer" id="viewer">
+    <div class="pages" id="pagesHost"></div>
+
+    <section class="landing" id="landing">
+      <div class="landing-card">
+        <div class="landing-logo">✍️</div>
+        <h1>Edit PDFs, free &amp; private</h1>
+        <p>Everything happens in your browser — your files are never uploaded anywhere.</p>
+        <div class="landing-actions">
+          <button class="btn primary big" id="btnLandingOpen">Open a PDF</button>
+          <button class="btn ghost big" id="btnLandingNew">Start from blank</button>
+        </div>
+        <ul class="landing-feats">
+          <li>✏️ Add text, drawings &amp; highlights</li>
+          <li>🖋️ Draw and place your signature</li>
+          <li>🖼️ Insert images and stamps</li>
+          <li>📄 Reorder, rotate, delete &amp; merge pages</li>
+          <li>📱 Works on phones, tablets &amp; desktop</li>
+        </ul>
+        <p class="landing-hint">…or just drag &amp; drop a PDF anywhere on this page</p>
+      </div>
+    </section>
+  </main>
+</div>
+
+<div class="modal" id="signModal" hidden>
+  <div class="modal-card">
+    <div class="modal-head">
+      <span>Draw your signature</span>
+      <button class="icon-btn small" id="btnSignClose" title="Close">
+        <svg viewBox="0 0 24 24"><path fill="currentColor" d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+      </button>
+    </div>
+    <canvas id="signPad" width="600" height="240"></canvas>
+    <div class="modal-foot">
+      <div class="sign-colors" id="signColors"></div>
+      <div class="spacer"></div>
+      <button class="btn ghost" id="btnSignClear">Clear</button>
+      <button class="btn primary" id="btnSignUse">Use signature</button>
+    </div>
+  </div>
+</div>
+
+<div class="drop-hint" id="dropHint"><div>Drop PDF to open</div></div>
+<div class="toast-host" id="toastHost"></div>
+<div class="busy" id="busy" hidden><div class="busy-spinner"></div><div id="busyText">Working…</div></div>
+
+<input type="file" id="fileOpen" accept="application/pdf,.pdf" hidden>
+<input type="file" id="fileMerge" accept="application/pdf,.pdf" hidden>
+<input type="file" id="fileImage" accept="image/png,image/jpeg" hidden>
+
+<script src="vendor/pdf.min.js"></script>
+<script src="vendor/pdf-lib.min.js"></script>
+<script src="js/app.js"></script>
+</body>
+</html>
