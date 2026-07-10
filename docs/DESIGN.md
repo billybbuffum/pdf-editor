@@ -94,12 +94,16 @@ capped at 100. `mod` stores a deep copy taken before a drag/resize/edit.
 - Pointer Events everywhere — one code path for mouse, touch, and stylus.
 - Toolbar docks to the bottom (thumb reach) below 760px; the page sidebar
   becomes a slide-in drawer; labels collapse to icons.
-- Pinch-to-zoom tracks two touch pointers on the viewer with live CSS-scale
-  feedback during the gesture and a single crisp re-render on release,
-  anchored so the content between your fingers stays put
-  (`touch-action: pan-x pan-y` keeps the browser from eating the gesture).
-  A second finger during a stroke cancels the stroke and becomes pan/zoom,
-  so you can navigate while a drawing tool is active. Desktop gets
+- Touch input in the viewer is **fully manual** (`touch-action: none`):
+  one-finger pan with momentum, pinch-zoom with live CSS-scale feedback and
+  a debounced crisp re-render on release (anchored so the content between
+  your fingers stays put), double-tap to zoom, and two-finger pan/zoom that
+  works while a drawing tool is active (a second finger cancels the stroke).
+  Owning the whole gesture pipeline means the browser can never steal a
+  gesture mid-way with `pointercancel` — the single biggest cause of janky
+  pinch on mobile Safari. Pages re-render offscreen and swap in, so zooming
+  stretches the current bitmap instead of flashing blank while pdf.js works,
+  and render resolution is capped lower on touch devices. Desktop gets
   ctrl+wheel / trackpad-pinch zoom around the cursor.
 - `env(safe-area-inset-*)` padding for notched phones.
 - Tap-to-type text uses a real `<textarea>` so the on-screen keyboard,

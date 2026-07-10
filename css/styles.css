@@ -209,8 +209,9 @@ svg { display: block; }
   overflow: auto;
   background: var(--viewer-bg);
   position: relative;
-  -webkit-overflow-scrolling: touch;
-  touch-action: pan-x pan-y; /* keep pinch events for the custom zoom handler */
+  /* all touch input is handled manually (pan, momentum, pinch, double-tap)
+     so the browser can never steal a gesture mid-way */
+  touch-action: none;
 }
 .pages {
   display: flex;

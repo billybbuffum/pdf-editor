@@ -227,12 +227,18 @@ function onPageIntersect(entries) {
   }
 }
 
-// Backing-store scale, capped so huge zooms / iOS canvas limits don't blow up
+// Backing-store scale, capped so huge zooms / iOS canvas limits don't blow
+// up; phones get a lower cap because rendering giant canvases is what makes
+// zooming feel slow
+const IS_TOUCH = matchMedia('(pointer: coarse)').matches;
+const BK_CAP = IS_TOUCH ? 3 : 4;
+const PX_CAP = IS_TOUCH ? 9e6 : 16e6;
+
 function backingScale(p) {
   const k = scaleNow() * (window.devicePixelRatio || 1);
-  const capped = Math.min(k, 4);
+  const capped = Math.min(k, BK_CAP);
   const px = p.baseW * capped * p.baseH * capped;
-  return px > 16e6 ? capped * Math.sqrt(16e6 / px) : capped;
+  return px > PX_CAP ? capped * Math.sqrt(PX_CAP / px) : capped;
 }
 
 async function renderPage(p) {
@@ -242,18 +248,26 @@ async function renderPage(p) {
   try {
     const bk = backingScale(p);
     const k = scaleNow();
-    p.pdfCanvas.width = Math.round(p.baseW * bk);
-    p.pdfCanvas.height = Math.round(p.baseH * bk);
-    p.pdfCanvas.style.width = (p.baseW * k) + 'px';
-    p.pdfCanvas.style.height = (p.baseH * k) + 'px';
-    const ctx = p.pdfCanvas.getContext('2d');
+    const w = Math.round(p.baseW * bk);
+    const h = Math.round(p.baseH * bk);
+    // render offscreen, then swap: the old (stretched) bitmap stays on
+    // screen instead of a blank page while pdf.js works
+    const off = document.createElement('canvas');
+    off.width = w;
+    off.height = h;
+    const ctx = off.getContext('2d');
     if (p.pdfPage) {
       const vp = p.pdfPage.getViewport({ scale: bk, rotation: norm360(p.intrinsicRot + p.userRot) });
       await p.pdfPage.render({ canvasContext: ctx, viewport: vp }).promise;
     } else {
       ctx.fillStyle = '#fff';
-      ctx.fillRect(0, 0, p.pdfCanvas.width, p.pdfCanvas.height);
+      ctx.fillRect(0, 0, w, h);
     }
+    p.pdfCanvas.width = w;
+    p.pdfCanvas.height = h;
+    p.pdfCanvas.getContext('2d').drawImage(off, 0, 0);
+    p.pdfCanvas.style.width = (p.baseW * k) + 'px';
+    p.pdfCanvas.style.height = (p.baseH * k) + 'px';
     p.renderedKey = key;
     const loading = p.shell.querySelector('.page-loading');
     if (loading) loading.remove();
@@ -528,7 +542,9 @@ function setZoom(z, keepCenter = true) {
   }
 }
 
-function updateShellSizes() {
+// resize the layout immediately (stretching current bitmaps — cheap), and
+// re-render crisply as a separate, debounceable step
+function resizeShells() {
   const k = scaleNow();
   for (const p of state.pages) {
     if (!p.shell) continue;
@@ -536,20 +552,31 @@ function updateShellSizes() {
     const h = (p.baseH * k) + 'px';
     p.shell.style.width = w;
     p.shell.style.height = h;
-    // stretch the current bitmaps immediately so the layout never shows
-    // gaps mid-zoom; the crisp re-render below replaces them
     p.pdfCanvas.style.width = w;
     p.pdfCanvas.style.height = h;
     p.overlay.style.width = w;
     p.overlay.style.height = h;
     p.renderedKey = null;
   }
-  // re-render whatever is on screen now
+}
+
+function renderVisiblePages() {
   for (const p of state.pages) {
     if (!p.shell) continue;
     const r = p.shell.getBoundingClientRect();
     if (r.bottom > -600 && r.top < innerHeight + 600) renderPage(p);
   }
+}
+
+let rerenderTimer = null;
+function scheduleRerender(delay = 120) {
+  clearTimeout(rerenderTimer);
+  rerenderTimer = setTimeout(renderVisiblePages, delay);
+}
+
+function updateShellSizes() {
+  resizeShells();
+  renderVisiblePages();
 }
 
 /* --- zoom anchoring: keep the content under your fingers/cursor in place --- */
@@ -1294,7 +1321,39 @@ function closeSidebar() { $('sidebar').classList.remove('open'); }
 
 (function wireGestures() {
   let pinch = null;
-  let residualPan = null; // finger left down after a pinch keeps panning
+  let pan = null;        // one-finger manual pan: {id, x, y, vx, vy, t, t0, dist}
+  let momentumId = 0;    // bump to cancel a running inertia animation
+  let lastTap = null;    // for double-tap zoom
+
+  /* --- inertia --- */
+
+  // touch scrolling is fully manual (touch-action:none), so route it to
+  // whichever surface is showing: the landing card scrolls itself
+  const activeScroller = () => ($('landing').hidden ? viewer : $('landing'));
+
+  function stopMomentum() { momentumId++; }
+
+  function startMomentum(vx, vy) {
+    if (Math.hypot(vx, vy) < 0.15) return; // px per ms
+    const id = ++momentumId;
+    const scroller = activeScroller();
+    let last = performance.now();
+    const step = (now) => {
+      if (id !== momentumId) return;
+      const dt = Math.min(now - last, 40);
+      last = now;
+      const decay = Math.pow(0.94, dt / 16.7);
+      vx *= decay;
+      vy *= decay;
+      if (Math.hypot(vx, vy) < 0.02) return;
+      scroller.scrollLeft -= vx * dt;
+      scroller.scrollTop -= vy * dt;
+      requestAnimationFrame(step);
+    };
+    requestAnimationFrame(step);
+  }
+
+  /* --- pinch --- */
 
   const midAndDist = () => {
     const [a, b] = [...activeTouches.values()];
@@ -1308,6 +1367,8 @@ function closeSidebar() { $('sidebar').classList.remove('open'); }
   function startPinch() {
     commitTextEditor();
     if (abortActiveGesture) abortActiveGesture(); // a stroke in progress becomes a pan, not ink
+    stopMomentum();
+    pan = null;
     const { mx, my, d } = midAndDist();
     const hr = pagesHost.getBoundingClientRect();
     pinch = {
@@ -1328,8 +1389,6 @@ function closeSidebar() { $('sidebar').classList.remove('open'); }
     pinch.f = clamp(d / pinch.d0, 0.25 / pinch.zoom0, 6 / pinch.zoom0);
     pinch.mx = mx;
     pinch.my = my;
-    // native panning is suppressed while two fingers are down, so the
-    // gesture translates as well as scales
     const dx = mx - pinch.mx0;
     const dy = my - pinch.my0;
     pagesHost.style.transform = `translate(${dx}px, ${dy}px) scale(${pinch.f})`;
@@ -1344,23 +1403,57 @@ function closeSidebar() { $('sidebar').classList.remove('open'); }
     pagesHost.style.willChange = '';
     state.zoom = clamp(g.zoom0 * g.f, 0.25, 6);
     computeFitScale();
-    updateShellSizes();
-    scrollToAnchor(g.anchor, g.mx, g.my);
-    // a finger still on the glass keeps panning (native scroll can't
-    // start mid-touch, so do it manually until it lifts)
+    resizeShells();                       // instant layout at the new size
+    scrollToAnchor(g.anchor, g.mx, g.my); // keep the pinched spot in place
+    scheduleRerender(140);                // crisp render once the hands settle
+    // a finger still on the glass keeps panning
     if (activeTouches.size === 1) {
       const [id] = activeTouches.keys();
       const t = activeTouches.get(id);
-      residualPan = { id, x: t.x, y: t.y };
+      pan = { id, x: t.x, y: t.y, vx: 0, vy: 0, t: performance.now(), t0: 0, dist: 99 };
     }
   }
+
+  /* --- double-tap zoom (pan tool) --- */
+
+  function handleTap(x, y) {
+    const now = performance.now();
+    if (lastTap && now - lastTap.t < 350 && Math.hypot(x - lastTap.x, y - lastTap.y) < 40) {
+      lastTap = null;
+      if (!state.pages.length) return;
+      const anchor = anchorInfo(x, y);
+      state.zoom = state.zoom < 1.75 ? clamp(state.zoom * 2.5, 0.25, 6) : 1;
+      computeFitScale();
+      resizeShells();
+      scrollToAnchor(anchor, x, y);
+      scheduleRerender(80);
+      $('zoomLabel').textContent = Math.round(state.zoom * 100) + '%';
+    } else {
+      lastTap = { x, y, t: now };
+    }
+  }
+
+  /* --- pointer plumbing --- */
+
+  const skipsPan = (target) =>
+    target instanceof Element &&
+    (target.closest('.text-editor') ||
+     (state.tool !== 'pan' && target.classList.contains('overlay-layer')));
 
   viewer.addEventListener('pointerdown', (e) => {
     if (e.pointerType !== 'touch') return;
     activeTouches.set(e.pointerId, { x: e.clientX, y: e.clientY });
-    residualPan = null;
-    if (activeTouches.size === 2) startPinch();
-    else if (activeTouches.size > 2) endPinch();
+    stopMomentum();
+    if (activeTouches.size === 2) {
+      startPinch();
+    } else if (activeTouches.size > 2) {
+      endPinch();
+    } else if (!skipsPan(e.target)) {
+      const now = performance.now();
+      pan = { id: e.pointerId, x: e.clientX, y: e.clientY, vx: 0, vy: 0, t: now, t0: now, dist: 0 };
+    } else {
+      pan = null;
+    }
   }, true);
 
   viewer.addEventListener('pointermove', (e) => {
@@ -1368,30 +1461,47 @@ function closeSidebar() { $('sidebar').classList.remove('open'); }
     if (!t) return;
     t.x = e.clientX;
     t.y = e.clientY;
-    if (residualPan && e.pointerId === residualPan.id) {
-      viewer.scrollLeft -= e.clientX - residualPan.x;
-      viewer.scrollTop -= e.clientY - residualPan.y;
-      residualPan.x = e.clientX;
-      residualPan.y = e.clientY;
+    if (pinch) {
+      movePinch();
       return;
     }
-    movePinch();
+    if (pan && e.pointerId === pan.id) {
+      const now = performance.now();
+      const dx = e.clientX - pan.x;
+      const dy = e.clientY - pan.y;
+      const dt = Math.max(now - pan.t, 1);
+      const scroller = activeScroller();
+      scroller.scrollLeft -= dx;
+      scroller.scrollTop -= dy;
+      pan.vx = 0.4 * pan.vx + 0.6 * (dx / dt);
+      pan.vy = 0.4 * pan.vy + 0.6 * (dy / dt);
+      pan.dist += Math.hypot(dx, dy);
+      pan.x = e.clientX;
+      pan.y = e.clientY;
+      pan.t = now;
+    }
   }, true);
 
   const drop = (e) => {
-    if (residualPan && e.pointerId === residualPan.id) residualPan = null;
     if (!activeTouches.delete(e.pointerId)) return;
+    if (pan && e.pointerId === pan.id) {
+      const g = pan;
+      pan = null;
+      if (e.type === 'pointerup') {
+        const quickTap = g.dist < 12 && performance.now() - g.t0 < 300;
+        if (quickTap && state.tool === 'pan') handleTap(e.clientX, e.clientY);
+        else if (performance.now() - g.t < 80) startMomentum(g.vx, g.vy);
+      }
+    }
     if (activeTouches.size < 2) endPinch();
   };
   viewer.addEventListener('pointerup', drop, true);
   viewer.addEventListener('pointercancel', drop, true);
 
-  // Without these, mobile Safari takes over two-finger gestures itself:
-  // it fires pointercancel (killing the pinch mid-gesture) or zooms the
-  // whole UI. Non-passive touchmove + GestureEvent preventDefault keep
-  // the pointer stream flowing to us.
+  // belt-and-suspenders against mobile Safari's native gestures
+  // (typing/selection in the text editor keeps its native behavior)
   viewer.addEventListener('touchmove', (e) => {
-    if (e.touches.length >= 2) e.preventDefault();
+    if (!(e.target instanceof Element && e.target.closest('.text-editor'))) e.preventDefault();
   }, { passive: false });
   for (const t of ['gesturestart', 'gesturechange', 'gestureend']) {
     document.addEventListener(t, (e) => e.preventDefault());
@@ -1404,8 +1514,9 @@ function closeSidebar() { $('sidebar').classList.remove('open'); }
     const anchor = anchorInfo(e.clientX, e.clientY);
     state.zoom = clamp(state.zoom * Math.exp(-e.deltaY * 0.0022), 0.25, 6);
     computeFitScale();
-    updateShellSizes();
+    resizeShells();
     scrollToAnchor(anchor, e.clientX, e.clientY);
+    scheduleRerender(100);
   }, { passive: false });
 })();
 
