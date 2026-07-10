@@ -15,6 +15,9 @@ device. It works on phones, tablets, and desktops.
   with color swatches and adjustable stroke width
 - **Whiteout** — drag a patch over anything (a wrong name, an old address),
   then type the correction on top with the Text tool
+- **Automatic text matching** — tapping the Text tool where text already
+  exists (even under a whiteout) matches the original's size, font family,
+  weight, color, and baseline, so corrections blend into the document
 - **Signatures** — draw your signature on a pad, then tap to place it
 - **Images** — insert PNG/JPEG images (logos, stamps, photos)
 - **Select / move / resize / erase** any annotation, with full undo

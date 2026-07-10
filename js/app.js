@@ -341,7 +341,7 @@ function drawAnnots(ctx, p, editor) {
     } else if (a.type === 'text') {
       ctx.save();
       ctx.fillStyle = a.color;
-      ctx.font = `${a.size}px ${FONT_STACK}`;
+      ctx.font = fontCss(a.font, a.size);
       ctx.textBaseline = 'alphabetic';
       const lines = a.text.split('\n');
       lines.forEach((line, i) => {
@@ -369,7 +369,7 @@ function imageElFor(a, page) {
 
 function annotBBox(a) {
   if (a.type === 'text') {
-    measureCtx.font = `${a.size}px ${FONT_STACK}`;
+    measureCtx.font = fontCss(a.font, a.size);
     const lines = a.text.split('\n');
     let w = 8;
     for (const line of lines) w = Math.max(w, measureCtx.measureText(line).width);
@@ -684,6 +684,13 @@ function updateToolOptions() {
   if (t === 'highlight') { slider.min = 6; slider.max = 40; slider.value = state.sizes.highlight; }
   else { slider.min = 1; slider.max = 24; slider.value = state.sizes.pen; }
 
+  // the font slider follows the selected text annotation
+  if (selType === 'text') {
+    const v = Math.round(state.selected.annot.size);
+    $('fontSize').value = v;
+    $('fontSizeVal').textContent = v;
+  }
+
   const color = state.colors[toolFamily()];
   document.querySelectorAll('.swatch').forEach(s =>
     s.classList.toggle('active', s.dataset.color === color));
@@ -777,8 +784,14 @@ function attachOverlayEvents(p) {
       eraseAt(p, pt);
     } else if (tool === 'text') {
       const hit = hitAnnot(p, pt);
-      if (hit && hit.type === 'text') openTextEditor(p, hit);
-      else openTextEditor(p, null, pt);
+      if (hit && hit.type === 'text') {
+        openTextEditor(p, hit);
+      } else {
+        // match the size/font/color of whatever text originally lived here
+        detectTextAt(p, pt)
+          .then(match => openTextEditor(p, null, pt, match))
+          .catch(() => openTextEditor(p, null, pt));
+      }
       return; // no capture needed
     } else if (tool === 'stamp') {
       placeStamp(p, pt);
@@ -932,35 +945,149 @@ function eraseAt(p, pt) {
   updateThumb(p);
 }
 
+/* ------------------------------------------------------------ text matching */
+
+// canvas/CSS font string for a text annotation's (possibly matched) font
+function fontCss(font, sizePx) {
+  const fam = font && font.family === 'serif' ? '"Times New Roman", Times, serif'
+    : font && font.family === 'mono' ? '"Courier New", Courier, monospace'
+    : FONT_STACK;
+  return `${font && font.italic ? 'italic ' : ''}${font && font.bold ? 'bold ' : ''}${sizePx}px ${fam}`;
+}
+
+// text layout of the original page in display coordinates, cached per rotation
+async function getTextLayout(p) {
+  if (!p.pdfPage) return [];
+  const R = norm360(p.intrinsicRot + p.userRot);
+  if (p._textLayout && p._textLayoutR === R) return p._textLayout;
+  const tc = await p.pdfPage.getTextContent();
+  const vp = p.pdfPage.getViewport({ scale: 1, rotation: R });
+  const items = [];
+  for (const it of tc.items) {
+    if (!it.str || !it.str.trim() || !it.width) continue;
+    const [a, b, c, d, e, f] = it.transform;
+    const size = Math.hypot(c, d) || Math.hypot(a, b);
+    if (!size) continue;
+    const run = Math.hypot(a, b) || 1;
+    const [x0, y0] = vp.convertToViewportPoint(e, f);
+    const [x1, y1] = vp.convertToViewportPoint(e + (a / run) * it.width, f + (b / run) * it.width);
+    items.push({
+      xStart: x0,
+      left: Math.min(x0, x1),
+      right: Math.max(x0, x1),
+      yBase: y0,
+      vertical: Math.abs(y1 - y0) > Math.abs(x1 - x0),
+      size,
+      fontName: it.fontName,
+      cssFamily: (tc.styles[it.fontName] || {}).fontFamily || '',
+    });
+  }
+  p._textLayout = items;
+  p._textLayoutR = R;
+  return items;
+}
+
+function classifyFont(p, item) {
+  let name = '';
+  try {
+    const f = p.pdfPage.commonObjs.get(item.fontName);
+    name = (f && f.name) || '';
+  } catch (e) { /* font not resolved yet — fall back to the css family */ }
+  const s = (name + ' ' + item.cssFamily).toLowerCase();
+  const family = /courier|mono/.test(s) ? 'mono'
+    : /times|georgia|garamond|book|palatino|cambria|roman|serif/.test(s) && !/sans/.test(s) ? 'serif'
+    : 'sans';
+  return {
+    family,
+    bold: /bold|black|heavy|semibold|demibold|demi\b/.test(s),
+    italic: /italic|oblique/.test(s),
+  };
+}
+
+// the original glyph color survives on the pdf canvas even under a whiteout
+// (annotations live on the overlay), so sample the darkest pixel of the run
+function sampleTextColor(p, item) {
+  try {
+    const bk = p.pdfCanvas.width / p.baseW;
+    if (!bk || !p.renderedKey) return '#1a1a1a';
+    const x = Math.max(0, Math.floor(item.left * bk));
+    const y = Math.max(0, Math.floor((item.yBase - item.size) * bk));
+    const w = Math.min(p.pdfCanvas.width - x, Math.ceil((item.right - item.left) * bk));
+    const h = Math.min(p.pdfCanvas.height - y, Math.ceil(item.size * 1.25 * bk));
+    if (w < 1 || h < 1) return '#1a1a1a';
+    const data = p.pdfCanvas.getContext('2d').getImageData(x, y, w, h).data;
+    let best = null, bestLum = 700; // ignore near-white: it's the paper
+    for (let i = 0; i < data.length; i += 4) {
+      const lum = data[i] + data[i + 1] + data[i + 2];
+      if (lum < bestLum) {
+        bestLum = lum;
+        best = [data[i], data[i + 1], data[i + 2]];
+      }
+    }
+    if (!best) return '#1a1a1a';
+    return '#' + best.map(v => v.toString(16).padStart(2, '0')).join('');
+  } catch (e) {
+    return '#1a1a1a';
+  }
+}
+
+// what text (size/font/color/baseline) originally lived at this spot?
+async function detectTextAt(p, pt) {
+  const items = await getTextLayout(p);
+  let best = null, bestD = Infinity;
+  for (const it of items) {
+    if (it.vertical) continue;
+    const top = it.yBase - it.size * 1.1;
+    const bottom = it.yBase + it.size * 0.35;
+    if (pt.x < it.left - 6 || pt.x > it.right + 6 || pt.y < top - 4 || pt.y > bottom + 4) continue;
+    const d = Math.abs((top + bottom) / 2 - pt.y);
+    if (d < bestD) { bestD = d; best = it; }
+  }
+  if (!best) return null;
+  return {
+    size: clamp(best.size, 4, 200),
+    x: best.xStart,
+    yBase: best.yBase,
+    color: sampleTextColor(p, best),
+    font: classifyFont(p, best),
+  };
+}
+
 /* ------------------------------------------------------------ text editing */
 
 let activeEditor = null; // {ta, page, annot(null if new), x, y}
 
-function openTextEditor(p, annot, pt) {
+function openTextEditor(p, annot, pt, match) {
   commitTextEditor();
   const k = scaleNow();
-  const size = annot ? annot.size : state.fontSize;
-  const color = annot ? annot.color : state.colors.text;
-  const x = annot ? annot.x : pt.x;
-  const y = annot ? annot.y : pt.y;
+  const size = annot ? annot.size : match ? match.size : state.fontSize;
+  const color = annot ? annot.color : match ? match.color : state.colors.text;
+  const font = annot ? annot.font : match ? match.font : null;
+  // snap onto the original text's start and baseline when we matched it
+  const x = annot ? annot.x : match ? match.x : pt.x;
+  const y = annot ? annot.y : match ? match.yBase - TEXT_ASCENT * size : pt.y;
 
   const ta = document.createElement('textarea');
   ta.className = 'text-editor';
   ta.value = annot ? annot.text : '';
   ta.style.left = (x * k) + 'px';
   ta.style.top = (y * k) + 'px';
-  ta.style.fontSize = (size * k) + 'px';
-  ta.style.lineHeight = TEXT_LINE;
+  ta.style.font = fontCss(font, size * k);
+  ta.style.lineHeight = TEXT_LINE; // after the font shorthand, which resets it
   ta.style.color = color;
   ta.setAttribute('autocapitalize', 'off');
   ta.spellcheck = false;
 
   if (annot) { annot._editing = true; renderOverlay(p); }
   p.shell.appendChild(ta);
-  activeEditor = { ta, page: p, annot, x, y, size, color };
+  activeEditor = { ta, page: p, annot, x, y, size, color, font };
+  if (match && !state._matchHint) {
+    state._matchHint = true;
+    toast(`Matched the original text: ${Math.round(size)}pt ${font.bold ? 'bold ' : ''}${font.family}`);
+  }
 
   const resize = () => {
-    measureCtx.font = `${size * k}px ${FONT_STACK}`;
+    measureCtx.font = fontCss(font, size * k);
     const lines = ta.value.split('\n');
     let w = 24;
     for (const line of lines) w = Math.max(w, measureCtx.measureText(line).width);
@@ -979,7 +1106,7 @@ function openTextEditor(p, annot, pt) {
 
 function commitTextEditor() {
   if (!activeEditor) return;
-  const { ta, page, annot, x, y, size, color } = activeEditor;
+  const { ta, page, annot, x, y, size, color, font } = activeEditor;
   activeEditor = null;
   const text = ta.value.replace(/\s+$/, '');
   ta.remove();
@@ -995,6 +1122,7 @@ function commitTextEditor() {
     }
   } else if (text) {
     const a = { type: 'text', x, y, text, size, color };
+    if (font) a.font = font;
     page.annots.push(a);
     pushUndo({ kind: 'add', page, annot: a });
   }
@@ -1197,7 +1325,20 @@ async function exportPdf() {
         srcDocs.set(p.src, await PDFDocument.load(state.sources[p.src].bytes, { ignoreEncryption: true }));
       }
     }
-    const font = await out.embedFont(StandardFonts.Helvetica);
+    // matched fonts map to the closest standard-14 face, embedded on demand
+    const stdName = (f) => {
+      const fam = f && f.family === 'serif' ? 'Times' : f && f.family === 'mono' ? 'Courier' : 'Helvetica';
+      const b = f && f.bold, i = f && f.italic;
+      if (fam === 'Times') return b && i ? 'TimesRomanBoldItalic' : b ? 'TimesRomanBold' : i ? 'TimesRomanItalic' : 'TimesRoman';
+      if (fam === 'Courier') return b && i ? 'CourierBoldOblique' : b ? 'CourierBold' : i ? 'CourierOblique' : 'Courier';
+      return b && i ? 'HelveticaBoldOblique' : b ? 'HelveticaBold' : i ? 'HelveticaOblique' : 'Helvetica';
+    };
+    const fontCache = new Map();
+    const fontFor = async (f) => {
+      const key = stdName(f);
+      if (!fontCache.has(key)) fontCache.set(key, await out.embedFont(StandardFonts[key]));
+      return fontCache.get(key);
+    };
     const imgCache = new Map();
 
     for (const p of state.pages) {
@@ -1265,9 +1406,11 @@ async function exportPdf() {
             color,
           });
         } else if (a.type === 'text') {
+          const font = await fontFor(a.font);
           const lines = a.text.split('\n');
-          lines.forEach((line, i) => {
-            if (!line) return;
+          for (let i = 0; i < lines.length; i++) {
+            const line = lines[i];
+            if (!line) continue;
             let safe = line;
             try { font.widthOfTextAtSize(safe, a.size); }
             catch { safe = safe.replace(/[^ -ÿ]/g, '?'); }
@@ -1277,7 +1420,7 @@ async function exportPdf() {
             } catch (err) {
               console.warn('Skipping unencodable text line', err);
             }
-          });
+          }
         } else if (a.type === 'image') {
           let img = imgCache.get(a.dataUrl);
           if (!img) {
