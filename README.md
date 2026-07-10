@@ -34,10 +34,11 @@ python3 -m http.server 8000   # or: npx serve
 
 ### Free hosting on GitHub Pages
 
-This repo ships with a deploy workflow (`.github/workflows/deploy.yml`).
-Enable it once in the repo settings: **Settings → Pages → Source → GitHub
-Actions**. Every push to `main` then publishes the editor to
-`https://<user>.github.io/pdf-editor/`.
+The editor is live at **https://billybbuffum.github.io/pdf-editor/**.
+
+The site is served from the `gh-pages` branch; the deploy workflow
+(`.github/workflows/deploy.yml`) force-syncs that branch on every push to
+`main`, so deployments are automatic.
 
 ## How it works
 
