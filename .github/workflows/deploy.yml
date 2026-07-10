@@ -1,14 +1,16 @@
 name: Deploy to GitHub Pages
 
+# The site is served from the gh-pages branch (created automatically by
+# GitHub Pages when the branch first appeared). The whole repo is the site,
+# so deploying is just fast-forwarding gh-pages to main.
+
 on:
   push:
     branches: [main]
   workflow_dispatch:
 
 permissions:
-  contents: read
-  pages: write
-  id-token: write
+  contents: write
 
 concurrency:
   group: pages
@@ -16,17 +18,8 @@ concurrency:
 
 jobs:
   deploy:
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/configure-pages@v5
-        with:
-          enablement: true # create the Pages site on first run
-      - uses: actions/upload-pages-artifact@v3
-        with:
-          path: '.'
-      - id: deployment
-        uses: actions/deploy-pages@v4
+      - name: Publish main to gh-pages
+        run: git push --force origin HEAD:gh-pages
