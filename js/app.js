@@ -309,6 +309,16 @@ function drawAnnots(ctx, p) {
         ctx.stroke();
       }
       ctx.restore();
+    } else if (a.type === 'rect') {
+      ctx.save();
+      ctx.fillStyle = a.color;
+      ctx.fillRect(a.x, a.y, a.w, a.h);
+      // faint outline so a white patch stays findable while editing
+      // (export draws only the fill)
+      ctx.strokeStyle = 'rgba(60, 70, 90, .18)';
+      ctx.lineWidth = 0.75;
+      ctx.strokeRect(a.x, a.y, a.w, a.h);
+      ctx.restore();
     } else if (a.type === 'text') {
       ctx.save();
       ctx.fillStyle = a.color;
@@ -346,7 +356,7 @@ function annotBBox(a) {
     for (const line of lines) w = Math.max(w, measureCtx.measureText(line).width);
     return { x: a.x, y: a.y, w, h: lines.length * TEXT_LINE * a.size };
   }
-  if (a.type === 'image') return { x: a.x, y: a.y, w: a.w, h: a.h };
+  if (a.type === 'image' || a.type === 'rect') return { x: a.x, y: a.y, w: a.w, h: a.h };
   // ink
   let minX = 1e9, minY = 1e9, maxX = -1e9, maxY = -1e9;
   for (const pt of a.points) {
@@ -480,6 +490,10 @@ function rotatePage(p) {
   for (const a of p.annots) {
     if (a.type === 'ink') {
       a.points = a.points.map(pt => mapPt(pt.x, pt.y));
+    } else if (a.type === 'rect') {
+      // a cover patch turns with the content it hides
+      const c = mapPt(a.x, a.y + a.h);
+      [a.x, a.y, a.w, a.h] = [c.x, c.y, a.h, a.w];
     } else {
       const b = annotBBox(a);
       const c = mapPt(a.x + b.w / 2, a.y + b.h / 2);
@@ -587,8 +601,9 @@ function toolFamily() {
 
 function updateToolOptions() {
   const t = state.tool;
+  const selType = t === 'select' && state.selected ? state.selected.annot.type : null;
   const showColors = t === 'pen' || t === 'highlight' || t === 'text' ||
-    (t === 'select' && state.selected && state.selected.annot.type === 'text');
+    selType === 'text' || selType === 'rect';
   $('swatches').style.display = showColors ? '' : 'none';
   $('customColor').style.display = showColors ? '' : 'none';
   $('sizeOption').hidden = !(t === 'pen' || t === 'highlight');
@@ -666,6 +681,10 @@ function attachOverlayEvents(p) {
       };
       p.annots.push(annot);
       gesture = { mode: 'draw', annot, last: pt };
+    } else if (tool === 'whiteout') {
+      const annot = { type: 'rect', x: pt.x, y: pt.y, w: 0, h: 0, color: '#ffffff' };
+      p.annots.push(annot);
+      gesture = { mode: 'rectdraw', annot, start: pt };
     } else if (tool === 'eraser') {
       gesture = { mode: 'erase' };
       eraseAt(p, pt);
@@ -727,6 +746,13 @@ function attachOverlayEvents(p) {
       ctx.stroke();
       ctx.restore();
       // (transform already set on the context from renderOverlay)
+    } else if (gesture.mode === 'rectdraw') {
+      const a = gesture.annot, s = gesture.start;
+      a.x = Math.min(s.x, pt.x);
+      a.y = Math.min(s.y, pt.y);
+      a.w = Math.abs(pt.x - s.x);
+      a.h = Math.abs(pt.y - s.y);
+      renderOverlay(p);
     } else if (gesture.mode === 'erase') {
       eraseAt(p, pt);
     } else if (gesture.mode === 'drag') {
@@ -741,6 +767,9 @@ function attachOverlayEvents(p) {
       if (a.type === 'image') {
         a.w = gesture.before.w * factor;
         a.h = gesture.before.h * factor;
+      } else if (a.type === 'rect') {
+        a.w = Math.max(4, pt.x - a.x);
+        a.h = Math.max(4, pt.y - a.y);
       } else if (a.type === 'text') {
         a.size = clamp(gesture.before.size * factor, 6, 200);
       }
@@ -756,6 +785,18 @@ function attachOverlayEvents(p) {
       pushUndo({ kind: 'add', page: p, annot: g.annot });
       renderOverlay(p);
       updateThumb(p);
+    } else if (g.mode === 'rectdraw') {
+      if (g.annot.w < 3 || g.annot.h < 3) {
+        p.annots.splice(p.annots.indexOf(g.annot), 1); // just a click — discard
+      } else {
+        pushUndo({ kind: 'add', page: p, annot: g.annot });
+        updateThumb(p);
+        if (!state._whiteoutHint) {
+          state._whiteoutHint = true;
+          toast('Covered! Now use the Text tool to type over it.');
+        }
+      }
+      renderOverlay(p);
     } else if (g.mode === 'drag' && g.moved) {
       pushUndo({ kind: 'mod', page: p, annot: g.annot, before: g.before });
       updateThumb(p);
@@ -1121,6 +1162,18 @@ async function exportPdf() {
               borderLineCap: LineCapStyle.Round,
             });
           }
+        } else if (a.type === 'rect') {
+          // axis-aligned in display space stays axis-aligned under 90° steps:
+          // convert two opposite corners and normalize
+          const c1 = conv(a.x, a.y);
+          const c2 = conv(a.x + a.w, a.y + a.h);
+          pg.drawRectangle({
+            x: Math.min(c1.x, c2.x),
+            y: Math.min(c1.y, c2.y),
+            width: Math.abs(c2.x - c1.x),
+            height: Math.abs(c2.y - c1.y),
+            color,
+          });
         } else if (a.type === 'text') {
           const lines = a.text.split('\n');
           lines.forEach((line, i) => {
@@ -1356,7 +1409,8 @@ function wireUI() {
 function applyColor(c) {
   state.colors[toolFamily()] = c;
   const sel = state.selected;
-  if (state.tool === 'select' && sel && sel.annot.type === 'text') {
+  if (state.tool === 'select' && sel &&
+      (sel.annot.type === 'text' || sel.annot.type === 'rect')) {
     sel.annot.color = c;
     renderOverlay(sel.page);
     updateThumb(sel.page);

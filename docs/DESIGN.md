@@ -42,6 +42,7 @@ state.pages   = [{
     { type: 'ink',   points, color, width, opacity },
     { type: 'text',  x, y, text, size, color },
     { type: 'image', dataUrl, x, y, w, h },
+    { type: 'rect',  x, y, w, h, color },   // whiteout / cover patch
   ],
 }]
 ```
@@ -108,9 +109,15 @@ on the rotated page, signature capture/placement, blank page, zoom, export,
 and re-opening the exported file (page count and /Rotate verified, pages
 rasterized and visually checked).
 
+Whiteout rectangles are drawn last-wins in annotation order, so text typed
+after a cover patch renders above it — in the editor and in the export.
+Note they cover content visually; they do not remove it from the file
+(true redaction would require content-stream rewriting).
+
 ## Roadmap ideas
 
-- Whiteout/redaction rectangles and shape tools (arrow, box, ellipse)
+- True redaction (strip covered text from the content stream)
+- Shape tools (arrow, box, ellipse)
 - Reuse the last signature (localStorage)
 - Form-field filling (AcroForm) via pdf-lib's form API
 - Unicode text via a subsetted embedded font (e.g. Noto Sans + fontkit)
