@@ -13,6 +13,8 @@ device. It works on phones, tablets, and desktops.
 - **Text** — tap anywhere to type; move, recolor, and resize afterwards
 - **Draw & highlight** — smooth freehand ink and a translucent highlighter,
   with color swatches and adjustable stroke width
+- **Whiteout** — drag a patch over anything (a wrong name, an old address),
+  then type the correction on top with the Text tool
 - **Signatures** — draw your signature on a pad, then tap to place it
 - **Images** — insert PNG/JPEG images (logos, stamps, photos)
 - **Select / move / resize / erase** any annotation, with full undo
@@ -65,6 +67,9 @@ once loaded, since both libraries are vendored locally.
 
 - Existing PDF text can be covered or annotated, but not directly rewritten
   (true content editing is on the roadmap)
+- Whiteout is a visual cover, **not redaction** — the original text remains
+  in the file and can be recovered (e.g. by copy-pasting). Don't rely on it
+  for sensitive information.
 - Text annotations use Helvetica; characters outside Latin-1 are replaced
   with `?` on export
 - Password-protected PDFs are not supported
