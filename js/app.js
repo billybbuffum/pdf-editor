@@ -102,17 +102,18 @@ async function openPdfBytes(bytes, name, append) {
         annots: [],
       });
     }
-    if (append) {
-      state.pages.push(...newPages);
-    } else {
+    const fresh = !append || state.pages.length === 0;
+    if (fresh) {
       state.pages = newPages;
       state.fileName = name || 'document.pdf';
       state.undoStack = [];
       state.selected = null;
       state.zoom = 1;
+    } else {
+      state.pages.push(...newPages);
     }
     documentChanged();
-    if (append) toast(`Added ${newPages.length} page${newPages.length > 1 ? 's' : ''}`);
+    if (!fresh) toast(`Added ${newPages.length} page${newPages.length > 1 ? 's' : ''}`);
   } catch (err) {
     console.error(err);
     toast(/password|encrypt/i.test(String(err && err.name || err))
@@ -153,6 +154,22 @@ function documentChanged() {
   computeFitScale();
   buildShells();
   buildThumbs();
+  requestAnimationFrame(updateCurrentThumb);
+}
+
+// mark the thumbnail of the page closest to the viewport centre
+function updateCurrentThumb() {
+  const mid = viewer.getBoundingClientRect().top + viewer.clientHeight / 2;
+  let best = null, bestDist = Infinity;
+  for (const p of state.pages) {
+    if (!p.shell) continue;
+    const r = p.shell.getBoundingClientRect();
+    const d = Math.abs((r.top + r.bottom) / 2 - mid);
+    if (d < bestDist) { bestDist = d; best = p; }
+  }
+  for (const p of state.pages) {
+    if (p.thumbEl) p.thumbEl.classList.toggle('current', p === best);
+  }
 }
 
 /* ------------------------------------------------------------ rendering */
@@ -242,6 +259,11 @@ async function renderPage(p) {
     if (!(err && err.name === 'RenderingCancelledException')) console.error(err);
   } finally {
     p.rendering = false;
+  }
+  // scale or rotation changed while we were rendering — go again
+  if (p.renderedKey && p.renderedKey !== `${scaleNow().toFixed(4)}:${p.userRot}`) {
+    renderPage(p);
+    return;
   }
   renderOverlay(p);
 }
@@ -428,6 +450,7 @@ function updateThumb(p) {
 }
 
 function pageAction(p, act) {
+  commitTextEditor();
   const idx = state.pages.indexOf(p);
   if (act === 'del') {
     if (state.pages.length === 1) { toast('A document needs at least one page.', true); return; }
@@ -1323,17 +1346,7 @@ function wireUI() {
     scrollTick = true;
     requestAnimationFrame(() => {
       scrollTick = false;
-      const mid = viewer.getBoundingClientRect().top + viewer.clientHeight / 2;
-      let best = null, bestDist = 1e9;
-      for (const p of state.pages) {
-        if (!p.shell) continue;
-        const r = p.shell.getBoundingClientRect();
-        const d = Math.abs((r.top + r.bottom) / 2 - mid);
-        if (d < bestDist) { bestDist = d; best = p; }
-      }
-      for (const p of state.pages) {
-        if (p.thumbEl) p.thumbEl.classList.toggle('current', p === best);
-      }
+      updateCurrentThumb();
     });
   });
 
