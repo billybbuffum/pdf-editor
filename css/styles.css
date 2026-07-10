@@ -215,10 +215,14 @@ svg { display: block; }
 .pages {
   display: flex;
   flex-direction: column;
-  align-items: center;
+  /* NOT align-items:center — flex centering makes the left side of a
+     zoomed page unreachable by scrolling; auto margins center safely */
+  align-items: flex-start;
   gap: 18px;
   padding: 18px 12px calc(30px + env(safe-area-inset-bottom));
   min-height: 100%;
+  width: max-content;
+  min-width: 100%;
 }
 .page-shell {
   position: relative;
@@ -226,6 +230,8 @@ svg { display: block; }
   box-shadow: 0 2px 12px rgba(0,0,0,.4);
   border-radius: 2px;
   flex: none;
+  margin-left: auto;
+  margin-right: auto;
 }
 .page-shell canvas.pdf-layer { display: block; }
 .page-shell canvas.overlay-layer {
